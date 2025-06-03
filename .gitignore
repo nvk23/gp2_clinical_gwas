@@ -1,0 +1,10 @@
+google_cloud/chroms/*
+google_cloud/rel7_info/*
+google_cloud/rel9_info/*
+google_cloud/run_files/*
+google_cloud/trial_dir1/*
+google_cloud/vcf_scripts/*
+google_cloud/working/*
+local/datasets/*
+local/locuszoom/*
+local/plots/*
