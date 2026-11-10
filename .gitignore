@@ -1,10 +1,18 @@
-google_cloud/chroms/*
-google_cloud/rel7_info/*
-google_cloud/rel9_info/*
-google_cloud/run_files/*
-google_cloud/trial_dir1/*
-google_cloud/vcf_scripts/*
-google_cloud/working/*
-local/datasets/*
-local/locuszoom/*
-local/plots/*
+# Local configuration and credentials - never commit.
+.env
+
+# Archived earlier versions of the analysis.
+archive/
+
+# Params files are generated from templates/ by 04_launch_gwas.ipynb.
+launch_ready/
+
+# Working output written beside the notebooks.
+locuszoom/
+fuma_inputs/
+*.png
+*.html
+
+.ipynb_checkpoints/
+__pycache__/
+.DS_Store

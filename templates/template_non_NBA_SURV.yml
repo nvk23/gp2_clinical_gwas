@@ -1,0 +1,41 @@
+# Time to HY >= 3 (Cox model) for a single non-NBA cohort, genotyped and
+# imputed outside the GP2 release (notebook 00).
+# GENO_ROOT is the gs:// folder holding that cohort's normalised pgen files.
+input: "{{GENO_ROOT}}/{{COHORT}}_chr{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22}_norm.pgen"
+covarfile: "{{PREP_ROOT}}/non_NBA/{{COHORT}}/SURV/hy_SURV_{{COHORT}}_covariates.tsv"
+phenofile: "{{PREP_ROOT}}/non_NBA/{{COHORT}}/SURV/hy_SURV_{{COHORT}}_phenotypes.tsv"
+
+# Variable names in covariate/phenotype files.
+# The survival model conditions on follow-up time and is fitted per cohort, so
+# cohort is the study arm rather than a covariate.
+pheno_name: "y"
+covar_numeric: "{{COVAR_NUMERIC}}"
+covar_categorical: "SEX"
+study_arm_col: "cohort"
+time_col: "study_days"
+
+# Analysis type flags
+linear_flag: false
+longitudinal_flag: false
+survival_flag: true
+
+# Processing options
+chunk_flag: true
+chunk_size: {{CHUNK_SIZE}}
+
+# Quality control parameters
+r2thres: 0.8
+minor_allele_freq: "0.01"
+minor_allele_ct: "20"
+kinship: "0.177"
+
+# Genetic parameters
+ancestry: "{{ANCESTRY}}"
+assembly: "hg38"
+skip_pop_split: true
+
+# Dataset identifier
+analysis_name: "{{ANALYSIS_NAME}}"
+
+# Visualization
+mh_plot: true
