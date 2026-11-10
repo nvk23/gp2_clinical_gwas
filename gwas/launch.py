@@ -10,10 +10,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import gwas_config as cfg
+from . import config as cfg
 
-TEMPLATE_DIR = Path(__file__).resolve().parent / 'templates'
-LAUNCH_DIR = Path(__file__).resolve().parent / 'launch_ready'
+REPO_ROOT = Path(__file__).resolve().parent.parent
+TEMPLATE_DIR = REPO_ROOT / 'templates'
+LAUNCH_DIR = REPO_ROOT / 'launch_ready'
 
 MODALITIES = ('NBA', 'WGS', 'non_NBA')
 

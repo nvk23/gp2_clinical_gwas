@@ -5,7 +5,7 @@ notebooks often run somewhere that has credentials but no mount, so they pull
 objects through the storage client instead.
 
 The project and bucket come from the environment (see the main pipeline's
-.env.example):
+.env.template):
 
     GOOGLE_CLOUD_PROJECT   project billed for the request
     GWAS_WORK_BUCKET       bucket holding the working data

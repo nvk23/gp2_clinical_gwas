@@ -21,7 +21,7 @@ set -a; source ../.env; set +a
 jupyter lab
 ```
 
-`gwas_config` is imported from the parent directory by default; set
+The `gwas` package is imported from the parent directory by default; set
 `GWAS_SCRIPTS_DIR` if these notebooks are run from somewhere that does not
 have that relative layout.
 

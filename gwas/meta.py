@@ -16,7 +16,7 @@ from __future__ import annotations
 import glob
 from pathlib import Path
 
-import gwas_config as cfg
+from . import config as cfg
 
 # Top-level folders under the progression root that are not ancestries.
 NOT_ANCESTRIES = {'meta', 'non_NBA'}

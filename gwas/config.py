@@ -1,7 +1,7 @@
 """Shared configuration for the GP2 clinical (HY progression) GWAS notebooks.
 
 Every machine- and bucket-specific value is read from the environment so that
-nothing user-specific ends up in the repository. Copy `.env.example`, fill it
+nothing user-specific ends up in the repository. Copy `.env.template`, fill it
 in, and `source` it (or export the variables another way) before starting
 Jupyter:
 
@@ -93,7 +93,7 @@ def require(*names: str) -> None:
     if missing:
         raise RuntimeError(
             'missing configuration: ' + ', '.join(missing)
-            + ' - set the matching variables in your environment (see .env.example)'
+            + ' - set the matching variables in your environment (see .env.template)'
         )
 
 

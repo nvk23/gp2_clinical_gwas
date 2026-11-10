@@ -33,20 +33,25 @@ jupyter lab
 ```
 
 No path is hard-coded: everything comes from the environment variables listed
-in `.env.template`. `gwas_config.describe()` at the top of each notebook prints
+in `.env.template`. `gwas.config.describe()` at the top of each notebook prints
 what was resolved. Keep `.env` out of git.
 
 ## Shared modules
 
+The helpers live in the `gwas/` package, imported as
+`from gwas import config as cfg`. The notebooks run from the repo root, so no
+path setup is needed; the ones in `extra/` add the parent directory to
+`sys.path` themselves.
+
 | Module | Contents |
 |---|---|
-| `gwas_config.py` | Environment-driven paths, bucket URLs, release layout, `shell_do` |
-| `gwas_prep.py` | Covariate / phenotype formatting, survival fixes, PLINK subsetting |
-| `gwas_launch.py` | Renders the params templates, builds the Nextflow commands |
-| `gwas_meta.py` | Finds per-study results, builds the PLINK / METAL commands |
-| `gwas_plots.py` | Manhattan, QQ, genomic inflation |
-| `gwas_forest.py` | Forest plots, with or without a meta-analysis summary |
-| `gwas_betabeta.py` | Beta-beta comparison and concordance statistics |
+| `gwas/config.py` | Environment-driven paths, bucket URLs, release layout, `shell_do` |
+| `gwas/prep.py` | Covariate / phenotype formatting, survival fixes, PLINK subsetting |
+| `gwas/launch.py` | Renders the params templates, builds the Nextflow commands |
+| `gwas/meta.py` | Finds per-study results, builds the PLINK / METAL commands |
+| `gwas/plots.py` | Manhattan, QQ, genomic inflation |
+| `gwas/forest.py` | Forest plots, with or without a meta-analysis summary |
+| `gwas/betabeta.py` | Beta-beta comparison and concordance statistics |
 
 ## Parameter templates
 
@@ -54,7 +59,7 @@ what was resolved. Keep `.env` out of git.
 (`NBA`, `WGS`, `non_NBA`) and analysis (`CS_disc`, `SURV`), generalised from
 the R12 run. Placeholders (`{{PREP_ROOT}}`, `{{ANCESTRY}}`, `{{COHORT}}`,
 `{{GENO_ROOT}}`, `{{COVAR_NUMERIC}}`, `{{CHUNK_SIZE}}`, `{{ANALYSIS_NAME}}`)
-are filled in by `gwas_launch.render_params()`; rendered files land in
+are filled in by `gwas.launch.render_params()`; rendered files land in
 `launch_ready/R<release>/`.
 
 The model specification differs by analysis, not by dataset:
