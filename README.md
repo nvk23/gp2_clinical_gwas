@@ -16,7 +16,7 @@ meta-analysis.
 | `05_meta_analysis.ipynb` | Per-study QC, PLINK and METAL meta-analysis, Manhattan / QQ | after every dataset has run |
 | `06_clean_results.ipynb` | Annotates results for GWASlab / LocusZoom, lead variants | after 05 |
 | `07_forest_plots.ipynb` | Per-variant forest plots across studies | after 05 |
-| `08_beta_beta_plots.ipynb` | Effect-size comparison between two analyses | after 06 |
+| `08_beta_beta_plots.ipynb` | Effect-size comparison: the two analyses, and risk vs progression | after 06 |
 | `locuscompare_setaxes.R` | LocusCompare figure for one locus, risk vs progression, on a shared axis | after 06, per locus |
 
 Analyses are referred to throughout as `CS_disc` (cross-sectional, discrete
@@ -51,7 +51,7 @@ path setup is needed; the ones in `extra/` add the parent directory to
 | `gwas/meta.py` | Finds per-study results, builds the PLINK / METAL commands |
 | `gwas/plots.py` | Manhattan, QQ, genomic inflation |
 | `gwas/forest.py` | Forest plots, with or without a meta-analysis summary |
-| `gwas/betabeta.py` | Beta-beta comparison and concordance statistics |
+| `gwas/betabeta.py` | Beta-beta comparison and results concordance between 2 analyses |
 
 ## Parameter templates
 
