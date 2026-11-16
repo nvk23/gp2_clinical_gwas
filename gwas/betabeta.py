@@ -1,11 +1,22 @@
 """Beta-beta comparison of two sets of summary statistics.
 
 `compare_effect()` is the entry point: it loads two result tables, merges them
-on SNP, classifies each variant by where it reaches significance, and draws the
-scatter of effect sizes with concordance statistics.
+on SNP, classifies each variant, and draws the scatter of effect sizes with
+concordance statistics. Two kinds of comparison are supported:
+
+* **two analyses of the same outcome** - survival vs cross-sectional HY3 -
+  which share an effect scale. Variants are coloured by where they reach
+  significance, and both axes get the same symmetric limits so that y = x is
+  the true diagonal. This is the default.
+* **two different GWAS** - PD risk vs HY3 progression - whose effects are not
+  on a common scale and whose variants were nominated by different lists.
+  Pass `nominated_by=` to colour by the nominating list instead of by
+  p-value, and `axis_scale='fit'` so that the small progression effects are
+  not squashed by the much larger risk effects. The second GWAS has to be put
+  on the first one's effect allele with `align_alleles()` first.
 
 Both tables must use the column names `SNP`, `BETA`, `SE`, `P` (and optionally
-`A1`, `A2`, `EAF`); `rename_summary_stats()` maps the METAL/locuszoom columns
+`A1`, `A2`, `EAF`); `rename_summary_stats()` maps the METAL/LocusZoom columns
 onto them.
 """
 
@@ -18,17 +29,69 @@ from matplotlib.path import Path as MplPath
 from matplotlib.transforms import Bbox
 from scipy import stats
 
-# METAL output merged with locuszoom annotation -> the names used here.
+# METAL output merged with LocusZoom annotation -> the names used here. The
+# same mapping covers a plain LocusZoom-format file, such as an external risk
+# GWAS, which carries no `Pvalue` column - there P comes from `neg_log_pvalue`.
 METAL_COLUMNS = {
     'rsid': 'SNP', 'beta': 'BETA', 'stderr_beta': 'SE', 'Pvalue': 'P',
     'alt': 'A1', 'ref': 'A2', 'alt_allele_freq': 'EAF',
+    '#chrom': 'CHR', 'pos': 'BP',
 }
 
+NUMERIC_COLUMNS = ('BETA', 'SE', 'P', 'EAF')
 
-def rename_summary_stats(df, mapping=None) -> pd.DataFrame:
-    """Rename summary-statistic columns onto SNP / BETA / SE / P / A1 / A2 / EAF."""
+
+def rename_summary_stats(df, mapping=None, numeric=True) -> pd.DataFrame:
+    """Rename summary-statistic columns onto SNP / BETA / SE / P / A1 / A2 / EAF.
+
+    With `numeric`, the effect columns are coerced to float - they often read
+    as strings because of 'NA' or '.' placeholders - and `P` is derived from
+    `neg_log_pvalue` for a table that has no p-value column of its own.
+    """
     mapping = METAL_COLUMNS if mapping is None else mapping
-    return df.rename(columns={k: v for k, v in mapping.items() if k in df.columns})
+    out = df.rename(columns={k: v for k, v in mapping.items() if k in df.columns}).copy()
+
+    if 'P' not in out.columns and 'neg_log_pvalue' in out.columns:
+        out['P'] = 10 ** -pd.to_numeric(out['neg_log_pvalue'], errors='coerce')
+    if numeric:
+        cols = [c for c in NUMERIC_COLUMNS if c in out.columns]
+        out[cols] = out[cols].apply(pd.to_numeric, errors='coerce')
+    return out
+
+
+def align_alleles(df, reference, name='') -> pd.DataFrame:
+    """Put `df` on the same effect allele as `reference`, matching on SNP.
+
+    Two GWAS can report the same variant against opposite alleles, which would
+    drop a perfectly concordant variant into the wrong quadrant of the plot.
+    Rows whose A1/A2 are the reference's A2/A1 have BETA negated, EAF
+    complemented and the alleles swapped; rows that still disagree afterwards -
+    a different allele pair altogether - are dropped.
+    """
+    for frame, what in ((df, 'table'), (reference, 'reference')):
+        missing = {'SNP', 'A1', 'A2'} - set(frame.columns)
+        if missing:
+            raise KeyError(f'{what} is missing {sorted(missing)}')
+
+    ref = reference[['SNP', 'A1', 'A2']].drop_duplicates('SNP')
+    out = df.merge(ref, on='SNP', how='left', suffixes=('', '_ref'))
+    # METAL writes its alleles in lower case; compare on one case.
+    for col in ('A1', 'A2', 'A1_ref', 'A2_ref'):
+        out[col] = out[col].astype('string').str.upper()
+
+    flip = ((out['A1'] == out['A2_ref']) & (out['A2'] == out['A1_ref'])).fillna(False)
+    out.loc[flip, 'BETA'] *= -1
+    if 'EAF' in out.columns:
+        out.loc[flip, 'EAF'] = 1 - out.loc[flip, 'EAF']
+    out.loc[flip, ['A1', 'A2']] = out.loc[flip, ['A2', 'A1']].values
+
+    mismatch = (out['A1_ref'].notna() & (out['A1'] != out['A1_ref'])).fillna(False)
+    prefix = f'{name}: ' if name else ''
+    print(f'{prefix}flipped {flip.sum()} variants onto the reference effect allele')
+    if mismatch.any():
+        print(f'{prefix}dropped {mismatch.sum()} with an unresolvable allele mismatch '
+              f'({", ".join(out.loc[mismatch, "SNP"].astype(str))})')
+    return out[~mismatch].drop(columns=['A1_ref', 'A2_ref'])
 
 
 def report_duplicates(df, name: str):
@@ -131,6 +194,28 @@ def classify_significance(merged, label1, label2, sig_level=5e-8) -> pd.DataFram
     return merged
 
 
+def classify_nomination(merged, nominated_by, label1, label2) -> pd.DataFrame:
+    """Tag each variant with the list that nominated it: either, both, neither.
+
+    For two GWAS that are not on one scale, "significant in both" is not the
+    interesting split - what matters is whether a variant was picked up by the
+    risk GWAS, by the progression GWAS, or by both. `nominated_by` maps each
+    of the two labels to its list of SNP IDs.
+    """
+    merged = merged.copy()
+    in1 = merged['SNP'].isin(nominated_by.get(label1, []))
+    in2 = merged['SNP'].isin(nominated_by.get(label2, []))
+
+    merged['category'] = 'None'
+    merged.loc[in1 & in2, 'category'] = 'Both'
+    merged.loc[in1 & ~in2, 'category'] = label1
+    merged.loc[~in1 & in2, 'category'] = label2
+
+    print('\nNomination classification:')
+    print(merged['category'].value_counts().to_string())
+    return merged
+
+
 def concordance(merged, label1, label2) -> dict | None:
     """Correlation, regression slope and sign agreement between the two betas."""
     b1, b2 = f'BETA_{label1}', f'BETA_{label2}'
@@ -155,6 +240,13 @@ def most_discordant(merged, label1, label2, n=5) -> list[str]:
         return []
     merged = merged.assign(beta_diff=np.abs(merged[b1] - merged[b2]))
     return merged.nlargest(n, 'beta_diff')['SNP'].tolist()
+
+
+def _padded_range(values, pad_frac=0.12) -> tuple[float, float]:
+    """Axis limits padded around `values`, always keeping zero in view."""
+    lo, hi = min(np.nanmin(values), 0), max(np.nanmax(values), 0)
+    pad = pad_frac * (hi - lo)
+    return lo - pad, hi + pad
 
 
 def place_labels(ax, x, y, names, segments, s=60, fontsize=8):
@@ -229,8 +321,23 @@ def place_labels(ax, x, y, names, segments, s=60, fontsize=8):
 def beta_beta_plot(merged, label1, label2, labels=None, sig_level=5e-8,
                    annotate_snps=None, annotate_discordant=0, annotate_all=False,
                    plot_error_bars=True, color_map=None, alpha=0.85, s=60,
-                   figsize=(12, 9), save=None, dpi=300):
-    """Scatter of the two effect sizes, coloured by where each variant is significant."""
+                   figsize=(12, 9), save=None, dpi=300,
+                   xlabel=None, ylabel=None, nominated=False,
+                   axis_scale='symmetric'):
+    """Scatter of the two effect sizes, coloured by `merged['category']`.
+
+    `xlabel` / `ylabel` replace the bare analysis names on the axes with what
+    the effect means ('Survival to HY3'). `nominated` says the categories came
+    from `classify_nomination()` rather than from p-values, which changes the
+    legend wording. `axis_scale` is either
+
+    * 'symmetric' - both axes get the same limits centred on zero and an equal
+      aspect, so y = x is the true diagonal. Use it when the two analyses
+      share an effect scale.
+    * 'fit' - each axis is padded around its own effects (zero always in
+      view), for two GWAS whose effect sizes differ by an order of magnitude.
+      Error bars may then run off the edge.
+    """
     b1, b2 = f'BETA_{label1}', f'BETA_{label2}'
     se1, se2 = f'SE_{label1}', f'SE_{label2}'
 
@@ -238,7 +345,9 @@ def beta_beta_plot(merged, label1, label2, labels=None, sig_level=5e-8,
         labels = [label1, label2, 'Both', 'None']
     label_map = {label1: labels[0], label2: labels[1],
                  'Both': labels[2], 'None': labels[3]}
-    legend_names = {labels[0]: f'{labels[0]} only', labels[1]: f'{labels[1]} only',
+    # 'SURV only' reads right for significance, 'Risk' for a nominating list
+    only = '' if nominated else ' only'
+    legend_names = {labels[0]: f'{labels[0]}{only}', labels[1]: f'{labels[1]}{only}',
                     labels[2]: labels[2],
                     labels[3]: 'Neither' if labels[3] == 'None' else labels[3]}
 
@@ -254,20 +363,29 @@ def beta_beta_plot(merged, label1, label2, labels=None, sig_level=5e-8,
     show_se = plot_error_bars and se1 in merged.columns and se2 in merged.columns
     valid = merged.dropna(subset=[b1, b2])
 
-    # Symmetric limits shared by both axes so y = x is the true diagonal
-    extent = np.abs(valid[[b1, b2]].values)
-    if show_se:
-        extent = np.concatenate([np.abs(valid[b1]) + valid[se1].fillna(0),
-                                 np.abs(valid[b2]) + valid[se2].fillna(0)])
-    lim = 1.15 * np.nanmax(extent)
-    ax.set_xlim(-lim, lim)
-    ax.set_ylim(-lim, lim)
+    if axis_scale == 'symmetric':
+        # One set of limits for both axes, wide enough for the error bars
+        extent = np.abs(valid[[b1, b2]].values)
+        if show_se:
+            extent = np.concatenate([np.abs(valid[b1]) + valid[se1].fillna(0),
+                                     np.abs(valid[b2]) + valid[se2].fillna(0)])
+        lim = 1.15 * np.nanmax(extent)
+        (x0, x1), (y0, y1) = (-lim, lim), (-lim, lim)
+    elif axis_scale == 'fit':
+        (x0, x1) = _padded_range(valid[b1].values)
+        (y0, y1) = _padded_range(valid[b2].values)
+    else:
+        raise ValueError("axis_scale must be 'symmetric' or 'fit'")
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
 
-    # Reference lines, kept as segments so the labels can route around them
-    segments = [[(-lim, 0), (lim, 0)], [(0, -lim), (0, lim)], [(-lim, -lim), (lim, lim)]]
+    # Reference lines, kept as segments so the labels can route around them.
+    # y = x is drawn only over the range both axes cover.
+    d0, d1 = max(x0, y0), min(x1, y1)
+    segments = [[(x0, 0), (x1, 0)], [(0, y0), (0, y1)], [(d0, d0), (d1, d1)]]
     ax.axhline(0, color='0.75', linewidth=0.8, zorder=1)
     ax.axvline(0, color='0.75', linewidth=0.8, zorder=1)
-    ax.plot([-lim, lim], [-lim, lim], color='0.5', linewidth=1, linestyle=':',
+    ax.plot([d0, d1], [d0, d1], color='0.5', linewidth=1, linestyle=':',
             label='y = x', zorder=2)
 
     for cat in (labels[3], labels[1], labels[0], labels[2]):
@@ -322,8 +440,8 @@ def beta_beta_plot(merged, label1, label2, labels=None, sig_level=5e-8,
             print(f'  {snp}: b1={row[b1]:.3f}, b2={row[b2]:.3f}, '
                   f'|d|={abs(row[b1] - row[b2]):.3f}')
 
-    ax.set_xlabel(f'Effect size (β) - {label1}', fontsize=12, fontweight='bold')
-    ax.set_ylabel(f'Effect size (β) - {label2}', fontsize=12, fontweight='bold')
+    ax.set_xlabel(f'Effect size (β) - {xlabel or label1}', fontsize=12, fontweight='bold')
+    ax.set_ylabel(f'Effect size (β) - {ylabel or label2}', fontsize=12, fontweight='bold')
     ax.set_title(f'{label1} vs {label2} effect sizes', fontsize=14,
                  fontweight='bold', pad=15)
     ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5, zorder=0)
@@ -334,9 +452,11 @@ def beta_beta_plot(merged, label1, label2, labels=None, sig_level=5e-8,
     order = sorted(range(len(handles)), key=lambda k: isinstance(handles[k], plt.Line2D))
     ax.legend([handles[k] for k in order], [handle_labels[k] for k in order],
               loc='upper left', bbox_to_anchor=(1.02, 1.0),
-              title=f'Significant (P < {sig_level:.0e}) in', frameon=True,
-              fontsize=9, title_fontsize=9, framealpha=0.9)
-    ax.set_aspect('equal', adjustable='box')
+              title='Nominated by' if nominated
+                    else f'Significant (P < {sig_level:.0e}) in',
+              frameon=True, fontsize=9, title_fontsize=9, framealpha=0.9)
+    if axis_scale == 'symmetric':
+        ax.set_aspect('equal', adjustable='box')
     plt.tight_layout()
 
     # Annotate after the layout is final, so the positions are exact
@@ -355,11 +475,16 @@ def beta_beta_plot(merged, label1, label2, labels=None, sig_level=5e-8,
 
 
 def compare_effect(data1, data2, snplist=None, label=None, drop_duplicates=True,
-                   sig_level=5e-8, investigate_dupes=False, return_data=False, **plot_kw):
+                   sig_level=5e-8, nominated_by=None, investigate_dupes=False,
+                   return_data=False, **plot_kw):
     """Load, merge, classify and plot two sets of summary statistics.
 
-    `data1` / `data2` are DataFrames or paths; `label` is
-    [name1, name2, 'Both', 'None']. Extra keyword arguments go to
+    `data1` / `data2` are DataFrames or paths, plotted on the x and y axes
+    respectively; `label` is [name1, name2, 'Both', 'None'].
+
+    Variants are coloured by where they reach `sig_level`, or, if
+    `nominated_by` is given, by the list that nominated them - a dict mapping
+    each of the two names to its SNP list. Extra keyword arguments go to
     `beta_beta_plot()`.
     """
     label = label or ['Cohort 1', 'Cohort 2', 'Both', 'None']
@@ -375,8 +500,12 @@ def compare_effect(data1, data2, snplist=None, label=None, drop_duplicates=True,
     df2 = load_and_prep(data2, name2, snplist=snplist, drop_duplicates=drop_duplicates)
 
     merged = merge_for_comparison(df1, df2, name1, name2)
-    merged = classify_significance(merged, name1, name2, sig_level=sig_level)
+    if nominated_by is not None:
+        merged = classify_nomination(merged, nominated_by, name1, name2)
+    else:
+        merged = classify_significance(merged, name1, name2, sig_level=sig_level)
 
     fig, ax, metrics = beta_beta_plot(merged, name1, name2, labels=label,
-                                      sig_level=sig_level, **plot_kw)
+                                      sig_level=sig_level,
+                                      nominated=nominated_by is not None, **plot_kw)
     return (fig, ax, metrics, merged) if return_data else (fig, ax, metrics)

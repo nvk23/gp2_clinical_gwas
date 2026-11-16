@@ -11,6 +11,10 @@
 # extra/locuszoom_prep.ipynb: bgzipped, tab separated, with
 # columns chrom, pos, rsid, neg_log_pvalue.
 #
+# The gene region track under the LocusZoom panels is fetched from the Ensembl
+# REST API (GRCh38), so it needs network access. If the lookup fails the script
+# warns and draws the figure without the track.
+#
 # Usage:
 #   export LDLINK_TOKEN=...          # free: https://ldlink.nih.gov/?tab=apiaccess
 #   export LC_RISK_FILE=...          # risk (incidence) GWAS
@@ -41,6 +45,9 @@ title_progression <- "SURVIVAL"
 
 r2_legend       <- TRUE            # draw the r^2 colour key on the scatter panel
 legend_position <- "bottomright"   # "bottomright", "topright" or "topleft"
+
+gene_track    <- TRUE              # draw the gene region track under the LocusZoom panels
+gene_biotypes <- "protein_coding"  # NULL for every biotype, or e.g. c("protein_coding", "lncRNA")
 
 # ---- inputs from the environment ----
 ldlink_token     <- Sys.getenv("LDLINK_TOKEN")
@@ -164,9 +171,150 @@ add_label <- function(merged, snp) {
   merged
 }
 
+# ---- gene annotations ----------------------------------------------------------
+
+#' Genes overlapping the plotted window, from the Ensembl REST API (GRCh38), so
+#' no local GTF is needed. Returns a zero-row frame (with a warning) if the
+#' lookup fails, which drops the gene track rather than killing the figure.
+fetch_genes <- function(chr, start, end, biotypes = "protein_coding") {
+  empty <- data.frame(name = character(), start = numeric(),
+                      end = numeric(), strand = numeric(),
+                      stringsAsFactors = FALSE)
+
+  url <- sprintf(
+    "https://rest.ensembl.org/overlap/region/human/%s:%.0f-%.0f?feature=gene;content-type=application/json",
+    sub("^chr", "", chr), start, end
+  )
+
+  res <- tryCatch(httr::GET(url, httr::timeout(60)), error = function(e) e)
+  if (inherits(res, "error") || httr::http_error(res)) {
+    warning("Could not fetch gene annotations from Ensembl; skipping the gene track.")
+    return(empty)
+  }
+
+  g <- tryCatch(
+    jsonlite::fromJSON(httr::content(res, as = "text", encoding = "UTF-8"),
+                       simplifyDataFrame = TRUE),
+    error = function(e) NULL
+  )
+  if (!is.data.frame(g) || nrow(g) == 0) return(empty)
+
+  if (!is.null(biotypes) && length(biotypes) && "biotype" %in% names(g)) {
+    g <- g[g$biotype %in% biotypes, , drop = FALSE]
+  }
+  if (nrow(g) == 0) return(empty)
+
+  # prevents unnamed genes from cluttering the track
+  nm   <- if ("external_name" %in% names(g)) as.character(g$external_name) else rep(NA_character_, nrow(g))
+  keep <- !is.na(nm) & nzchar(nm)
+  g    <- g[keep, , drop = FALSE]
+  nm   <- nm[keep]
+  if (nrow(g) == 0) return(empty)
+
+  out <- data.frame(name   = nm,
+                    start  = as.numeric(g$start),
+                    end    = as.numeric(g$end),
+                    strand = as.numeric(g$strand),
+                    stringsAsFactors = FALSE)
+  out <- out[order(out$start, out$end), , drop = FALSE]
+  rownames(out) <- NULL
+  out
+}
+
+#' Greedy packing: each gene goes on the topmost row where neither its body nor
+#' its (approximate) label width collides with what is already there.
+layout_genes <- function(genes, xlim, char_frac = 0.012) {
+  if (nrow(genes) == 0) return(cbind(genes, row = integer()))
+
+  span <- diff(xlim)
+  genes$start <- pmax(genes$start, xlim[1])
+  genes$end   <- pmin(genes$end,   xlim[2])
+
+  mid         <- (genes$start + genes$end) / 2
+  half_label  <- nchar(genes$name) * char_frac * span / 2
+  genes$left  <- pmin(genes$start, mid - half_label)
+  genes$right <- pmax(genes$end,   mid + half_label)
+
+  pad       <- span * 0.01
+  row_end   <- numeric(0)
+  genes$row <- NA_integer_
+  for (i in seq_len(nrow(genes))) {
+    placed <- FALSE
+    for (r in seq_along(row_end)) {
+      if (genes$left[i] > row_end[r] + pad) {
+        genes$row[i] <- r
+        row_end[r]   <- genes$right[i]
+        placed       <- TRUE
+        break
+      }
+    }
+    if (!placed) {
+      row_end      <- c(row_end, genes$right[i])
+      genes$row[i] <- length(row_end)
+    }
+  }
+  genes
+}
+
+#' Gene bodies as arrows pointing in the direction of transcription, labelled
+#' with the gene symbol. Carries the x axis for the stack above it.
+make_gene_track <- function(genes, chr, xlim) {
+  genes$x    <- ifelse(genes$strand < 0, genes$end,   genes$start)
+  genes$xend <- ifelse(genes$strand < 0, genes$start, genes$end)
+  n_rows     <- max(genes$row)
+
+  ggplot(genes) +
+    geom_segment(
+      aes(x = x, xend = xend, y = row, yend = row),
+      linewidth = 0.9, colour = "grey25",
+      arrow = arrow(length = unit(0.055, "inches"), type = "closed", ends = "last")
+    ) +
+    geom_text(
+      aes(x = (start + end) / 2, y = row - 0.38, label = name),
+      size = 2.8, fontface = "italic", colour = "grey15"
+    ) +
+    scale_x_continuous(labels = function(x) sprintf("%.1f", x / 1e6),
+                       limits = xlim, expand = expansion(mult = 0.02)) +
+    scale_y_reverse(limits = c(n_rows + 0.5, 0.35), expand = expansion(mult = 0.05)) +
+    xlab(paste0("chr", chr, " (Mb)")) +
+    theme_classic() +
+    theme(axis.title.y = element_blank(),
+          axis.text.y  = element_blank(),
+          axis.ticks.y = element_blank(),
+          axis.line.y  = element_blank(),
+          plot.margin  = unit(c(0, 1, 0.5, 0.5), "lines"))
+}
+
 # ---- panels ------------------------------------------------------------------
 
-make_scatterplot <- function(merged, title1, title2, color, shape, size) {
+#' Lead-SNP label. The rsID is drawn last (so no point covers it), carries a
+#' white halo so it stays readable over a dense cloud, and is nudged into the
+#' headroom above the point with a leader line back to it.
+snp_label <- function(nudge_x = 0, nudge_y = 0) {
+  ggrepel::geom_text_repel(
+    aes(label = label),
+    size               = 3.3,
+    fontface           = "bold",
+    colour             = "black",
+    bg.color           = "white",
+    bg.r               = 0.18,
+    box.padding        = 0.45,
+    point.padding      = 0.45,
+    nudge_x            = nudge_x,
+    nudge_y            = nudge_y,
+    min.segment.length = 0,
+    segment.colour     = "grey25",
+    segment.size       = 0.4,
+    force              = 8,
+    max.iter           = 20000,
+    max.overlaps       = Inf,
+    seed               = 42,
+    na.rm              = TRUE
+  )
+}
+
+make_scatterplot <- function(merged, title1, title2, color, shape, size,
+                             nudge_x = 0, nudge_y = 0) {
   ggplot(merged, aes(logp1, logp2)) +
     geom_point(aes(fill = rsid, size = rsid, shape = rsid), alpha = 0.8) +
     geom_point(
@@ -178,11 +326,12 @@ make_scatterplot <- function(merged, title1, title2, color, shape, size) {
     scale_fill_manual(values = color, guide = "none") +
     scale_shape_manual(values = shape, guide = "none") +
     scale_size_manual(values = size, guide = "none") +
-    ggrepel::geom_text_repel(aes(label = label), max.overlaps = Inf) +
+    snp_label(nudge_x, nudge_y) +
     theme_classic()
 }
 
-make_locuszoom <- function(stats, title, chr, color, shape, size) {
+make_locuszoom <- function(stats, title, chr, color, shape, size,
+                           xlim = NULL, nudge_y = 0) {
   ggplot(stats, aes(x = pos, logp)) +
     geom_point(aes(fill = rsid, size = rsid, shape = rsid), alpha = 0.8) +
     geom_point(
@@ -192,8 +341,9 @@ make_locuszoom <- function(stats, title, chr, color, shape, size) {
     scale_fill_manual(values = color, guide = "none") +
     scale_shape_manual(values = shape, guide = "none") +
     scale_size_manual(values = size, guide = "none") +
-    scale_x_continuous(labels = function(x) sprintf("%.1f", x / 1e6)) +
-    ggrepel::geom_text_repel(aes(label = label), max.overlaps = Inf) +
+    scale_x_continuous(labels = function(x) sprintf("%.1f", x / 1e6),
+                       limits = xlim, expand = expansion(mult = 0.02)) +
+    snp_label(nudge_y = nudge_y) +
     xlab(paste0("chr", chr, " (Mb)")) +
     ylab(bquote(.(title) ~ -log[10] * "(P)")) +
     theme_classic() +
@@ -222,14 +372,18 @@ add_r2_legend <- function(p, position = c("bottomright", "topright", "topleft"))
                                  x = legend_box$x[i] + 0.05,
                                  y = legend_box$y[i], hjust = -0.3, size = 10)
   }
+  # The r^2 title sits above the colour stack, centred on it, so it clears the
+  # top box instead of straddling its corner.
   p + cowplot::draw_label(parse(text = "r^2"),
-                          x = legend_box$x[1] + 0.05, y = legend_box$y[1],
-                          vjust = -2, size = 10)
+                          x     = legend_box$x[1] + 0.025,
+                          y     = max(legend_box$y) + 0.05 + 0.015,
+                          hjust = 0.5, vjust = 0, size = 10)
 }
 
 #' Assemble the three panels on one shared -log10(P) scale.
 make_combined_plot <- function(merged, title1, title2, ld, chr, snp = NULL,
-                               r2_legend = TRUE, legend_position = "bottomright") {
+                               r2_legend = TRUE, legend_position = "bottomright",
+                               gene_track = TRUE, gene_biotypes = "protein_coding") {
   snp   <- get_lead_snp(merged, snp)
   color <- assign_color(merged$rsid, snp, ld)
 
@@ -245,26 +399,50 @@ make_combined_plot <- function(merged, title1, title2, ld, chr, snp = NULL,
   if (!is.finite(max_logp) || max_logp <= 0) max_logp <- 1
   max_logp <- ceiling(max_logp)
 
-  p1 <- make_scatterplot(merged, title1, title2, color, shape, size) +
-    scale_x_continuous(limits = c(0, max_logp)) +
-    scale_y_continuous(limits = c(0, max_logp))
+  # Headroom at the top of every panel for the nudged rsID label. Continuous
+  # limits censor out-of-range values, so y_top has to clear the nudged label
+  # position - otherwise ggrepel silently drops the label.
+  nudge    <- 0.06 * max_logp
+  y_top    <- max_logp + 3 * nudge
+  y_expand <- expansion(mult = c(0.02, 0.05))
+
+  p1 <- make_scatterplot(merged, title1, title2, color, shape, size,
+                         nudge_y = nudge) +
+    scale_x_continuous(limits = c(0, y_top), expand = y_expand) +
+    scale_y_continuous(limits = c(0, y_top), expand = y_expand)
 
   # Must come after the scales: ggdraw() output can no longer take scale_*().
   if (isTRUE(r2_legend)) p1 <- add_r2_legend(p1, legend_position)
 
+  # One x range for every stacked panel, so the gene track lines up with the SNPs.
+  xlim <- range(merged$pos, na.rm = TRUE)
+
   panel <- function(logp_col, title) {
     d <- merged[, c("rsid", logp_col, "chr", "pos", "label")]
     colnames(d)[colnames(d) == logp_col] <- "logp"
-    make_locuszoom(d, title, chr, color, shape, size) +
-      scale_y_continuous(limits = c(0, max_logp))
+    make_locuszoom(d, title, chr, color, shape, size, xlim, nudge_y = nudge) +
+      scale_y_continuous(limits = c(0, y_top), expand = y_expand)
   }
 
-  p2 <- panel("logp1", title1) +
-    theme(axis.text.x = element_blank(), axis.title.x = element_blank())
-  p3 <- panel("logp2", title2)
+  no_x <- theme(axis.text.x = element_blank(), axis.title.x = element_blank())
+  p2   <- panel("logp1", title1) + no_x
+  p3   <- panel("logp2", title2)
 
-  right <- cowplot::plot_grid(p2, p3, align = "v", nrow = 2,
-                              rel_heights = c(0.8, 1))
+  panels      <- list(p2, p3)
+  rel_heights <- c(0.8, 1)
+
+  if (isTRUE(gene_track)) {
+    genes <- fetch_genes(chr, xlim[1], xlim[2], gene_biotypes)
+    if (nrow(genes) > 0) {
+      genes <- layout_genes(genes, xlim)
+      # The gene track now carries the x axis, so drop it from the panel above.
+      panels      <- list(p2, p3 + no_x, make_gene_track(genes, chr, xlim))
+      rel_heights <- c(0.8, 1, 0.22 + 0.1 * max(genes$row))
+    }
+  }
+
+  right <- cowplot::plot_grid(plotlist = panels, align = "v", axis = "lr",
+                              ncol = 1, rel_heights = rel_heights)
   cowplot::plot_grid(p1, right, align = "h", rel_widths = c(1.6, 2))
 }
 
@@ -274,7 +452,9 @@ locuscompare_shared_axes <- function(stats1, stats2, pos_lookup,
                                      population = "EUR", window = 500000,
                                      token = ldlink_token,
                                      r2_legend = TRUE,
-                                     legend_position = "bottomright") {
+                                     legend_position = "bottomright",
+                                     gene_track = TRUE,
+                                     gene_biotypes = "protein_coding") {
   d1 <- read_sumstats(stats1)
   d2 <- read_sumstats(stats2)
 
@@ -287,7 +467,8 @@ locuscompare_shared_axes <- function(stats1, stats2, pos_lookup,
   snp <- get_lead_snp(merged, snp)
   ld  <- retrieve_LD(snp, population, window, token)
   make_combined_plot(merged, title1, title2, ld, chr, snp,
-                     r2_legend = r2_legend, legend_position = legend_position)
+                     r2_legend = r2_legend, legend_position = legend_position,
+                     gene_track = gene_track, gene_biotypes = gene_biotypes)
 }
 
 # ---- run ---------------------------------------------------------------------
@@ -310,7 +491,9 @@ p <- locuscompare_shared_axes(
   population      = population,
   window          = window,
   r2_legend       = r2_legend,
-  legend_position = legend_position
+  legend_position = legend_position,
+  gene_track      = gene_track,
+  gene_biotypes   = gene_biotypes
 )
 
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
